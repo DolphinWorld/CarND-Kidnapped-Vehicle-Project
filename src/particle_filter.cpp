@@ -19,49 +19,173 @@
 
 using namespace std;
 
+int debug = 0;
 void ParticleFilter::init(double x, double y, double theta, double std[]) {
+	if (debug) cout << "init " << endl;
+        default_random_engine gen;
+	gen.seed(123);
+        num_particles = 1000;
 	// TODO: Set the number of particles. Initialize all particles to first position (based on estimates of 
 	//   x, y, theta and their uncertainties from GPS) and all weights to 1. 
 	// Add random Gaussian noise to each particle.
 	// NOTE: Consult particle_filter.h for more information about this method (and others in this file).
 
+        normal_distribution<double> dist_x(x, std[0]);
+        normal_distribution<double> dist_y(y, std[1]);
+        normal_distribution<double> dist_psi(theta, std[2]);
+
+        for (int i = 0; i < num_particles; ++i) {
+		Particle p = Particle();
+		p.id = i;
+		p.x = dist_x(gen);
+		p.y = dist_y(gen);
+		p.theta = dist_psi(gen);
+		p.weight = 1.0;
+		particles.push_back(p);
+		weights.push_back(p.weight);
+		//cout << "initValue:" << p.x << "," << p.y << "," << p.theta << endl;
+	}
+	is_initialized = true;
 }
 
 void ParticleFilter::prediction(double delta_t, double std_pos[], double velocity, double yaw_rate) {
+	if (debug) cout << "prediction " << endl;
 	// TODO: Add measurements to each particle and add random Gaussian noise.
 	// NOTE: When adding noise you may find std::normal_distribution and std::default_random_engine useful.
 	//  http://en.cppreference.com/w/cpp/numeric/random/normal_distribution
 	//  http://www.cplusplus.com/reference/random/default_random_engine/
 
+	default_random_engine gen;
+
+	vector<Particle> pList;
+	for (int i = 0; i < num_particles; ++i) {
+		Particle p = particles[i];
+
+		if (yaw_rate == 0) {
+			yaw_rate = 0.00001;
+		}
+		double dt = delta_t;
+		double x = p.x + (velocity / yaw_rate) * (sin(p.theta + yaw_rate * dt) - sin(p.theta));
+		double y = p.y + (velocity / yaw_rate) * (cos(p.theta) - cos(p.theta +  yaw_rate * dt));
+		double theta = p.theta + yaw_rate * dt;
+
+        	normal_distribution<double> dist_x(x , std_pos[0]);
+        	normal_distribution<double> dist_y(y, std_pos[1]);
+        	normal_distribution<double> dist_psi(theta, std_pos[2]);
+
+		p.x = dist_x(gen);
+		p.y = dist_y(gen);
+		p.theta = dist_psi(gen);
+		
+		pList.push_back(p);
+		//cout << "Pred:" << p.x << "," << p.y << "," << "," << p.theta << endl;
+	}
+	particles.clear();
+	particles = pList;
 }
 
 void ParticleFilter::dataAssociation(std::vector<LandmarkObs> predicted, std::vector<LandmarkObs>& observations) {
+	if (debug) cout << "data association " << endl;
 	// TODO: Find the predicted measurement that is closest to each observed measurement and assign the 
 	//   observed measurement to this particular landmark.
 	// NOTE: this method will NOT be called by the grading code. But you will probably find it useful to 
 	//   implement this method and use it as a helper during the updateWeights phase.
-
+	for (int i = 0; i < observations.size(); ++i) {
+		observations[i].id = -1;
+		double minId = -1;
+		double minDist = 10000000;
+		for (int j = 0; j < predicted.size(); ++j) {
+			double dx = observations[i].x - predicted[j].x;
+			double dy = observations[i].y - predicted[j].y;
+			double dist = dx * dx + dy * dy;
+			
+			if (dist < minDist) {
+				minDist = dist;
+				observations[i].id = j;
+			}	
+		}
+	}
 }
 
 void ParticleFilter::updateWeights(double sensor_range, double std_landmark[], 
 		std::vector<LandmarkObs> observations, Map map_landmarks) {
-	// TODO: Update the weights of each particle using a mult-variate Gaussian distribution. You can read
-	//   more about this distribution here: https://en.wikipedia.org/wiki/Multivariate_normal_distribution
-	// NOTE: The observations are given in the VEHICLE'S coordinate system. Your particles are located
-	//   according to the MAP'S coordinate system. You will need to transform between the two systems.
-	//   Keep in mind that this transformation requires both rotation AND translation (but no scaling).
-	//   The following is a good resource for the theory:
-	//   https://www.willamette.edu/~gorr/classes/GeneralGraphics/Transforms/transforms2d.htm
-	//   and the following is a good resource for the actual equation to implement (look at equation 
-	//   3.33
-	//   http://planning.cs.uiuc.edu/node99.html
+	if (debug) cout << "updateWeights " << endl;
+	double sensor_range2 = sensor_range * sensor_range;
+	double sx = std_landmark[0];
+	double sy = std_landmark[1];
+	sx = sx == 0 ? 0.1 : sx;
+	sy = sy == 0 ? 0.1 : sy;
+	double sx2 = 2 * sx * sx;
+	double sy2 = 2 * sy * sy;
+
+	vector<Particle> pList;
+	vector<double> wList;
+	vector<LandmarkObs> pred;
+
+	// convert land mark to LandmarkObs vector for pred
+	for (int j = 0; j < map_landmarks.landmark_list.size(); ++j) {
+		LandmarkObs obj;
+                obj.id = map_landmarks.landmark_list[j].id_i;
+		obj.x = (double)map_landmarks.landmark_list[j].x_f;
+		obj.y = (double)map_landmarks.landmark_list[j].y_f;
+		pred.push_back(obj);
+	}
+
+	for (int i = 0; i < num_particles; i++) {
+		Particle p = particles[i];
+		std:vector<LandmarkObs> obsInMap;
+		for (int j = 0; j < observations.size(); j++) {
+			LandmarkObs o = observations[j];
+			LandmarkObs newO;
+			newO.x = p.x + o.x * cos(p.theta) - o.y * sin(p.theta);
+			newO.y = p.y + o.x * sin(p.theta) + o.y * cos(p.theta);
+
+			double dx = newO.x - p.x;
+			double dy = newO.y - p.y;
+			if (dx * dx + dy * dy <= sensor_range2) {
+				obsInMap.push_back(newO);
+			}
+		}
+		dataAssociation(pred, obsInMap); 
+
+		p.weight = 1.0;
+		for (int j = 0; j < obsInMap.size(); ++j) {
+			int id = obsInMap[j].id;
+			LandmarkObs preObj = pred[id];
+
+			double dx = preObj.x - obsInMap[j].x;
+			double dy = preObj.y - obsInMap[j].y;
+			double dx2 = dx * dx;
+			double dy2 = dy * dy;
+
+			double v0 = 2 * M_PI * sx * sy;
+			double v1 = -(dx2 / sx2 + dy2 / sy2);	
+			double change = exp (v1) / v0;
+			p.weight *= change;
+		//	cout << dx << "," << dy << " -> " << change << " -> " << p.weight<< endl;
+		}
+		pList.push_back(p);
+		wList.push_back(p.weight);
+	}
+	particles.clear();
+	particles = pList;
+	weights.clear();
+	weights = wList;
 }
 
 void ParticleFilter::resample() {
-	// TODO: Resample particles with replacement with probability proportional to their weight. 
-	// NOTE: You may find std::discrete_distribution helpful here.
-	//   http://en.cppreference.com/w/cpp/numeric/random/discrete_distribution
+    	default_random_engine gen;
+    	discrete_distribution<> distribution(weights.begin(), weights.end());
 
+	vector<Particle> pList; 
+    	for (int i = 0; i < num_particles; ++i) {
+       		int idx = distribution(gen);
+        	pList.push_back(particles[idx]);
+		//cout << idx << "," << particles[idx].weight << endl;
+    	}
+
+	particles.clear();
+	particles = pList;
 }
 
 Particle ParticleFilter::SetAssociations(Particle particle, std::vector<int> associations, std::vector<double> sense_x, std::vector<double> sense_y)
